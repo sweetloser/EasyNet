@@ -17,7 +17,7 @@ public struct EasyNetPacketCodec: PacketCodec {
         var buffer = ByteBufferAllocator().buffer(capacity: Int(ProtocolHeader.byteLength + packet.payload.count))
         let header = packet.header
 
-        buffer.writeInteger(header.kind.rawValue, endianness: endianness, as: UInt16.self)
+        buffer.writeInteger(header.magic.rawValue, endianness: endianness, as: UInt16.self)
         buffer.writeInteger(header.version, endianness: endianness, as: UInt8.self)
         buffer.writeInteger(header.codec.rawValue, endianness: endianness, as: UInt8.self)
         buffer.writeInteger(header.command, endianness: endianness, as: UInt16.self)
@@ -48,7 +48,7 @@ public struct EasyNetPacketDecoder: PacketDecoder {
         var packets: [ProtocolPacket] = []
 
         while buffer.readableBytes >= ProtocolHeader.byteLength {
-            guard let kindRaw = buffer.getInteger(at: buffer.readerIndex, endianness: endianness, as: UInt16.self),
+            guard let magicRaw = buffer.getInteger(at: buffer.readerIndex, endianness: endianness, as: UInt16.self),
                   let version = buffer.getInteger(at: buffer.readerIndex + 2, endianness: endianness, as: UInt8.self),
                   let codecRaw = buffer.getInteger(at: buffer.readerIndex + 3, endianness: endianness, as: UInt8.self),
                   let command = buffer.getInteger(at: buffer.readerIndex + 4, endianness: endianness, as: UInt16.self),
@@ -74,7 +74,7 @@ public struct EasyNetPacketDecoder: PacketDecoder {
             }
 
             let header = ProtocolHeader(
-                kind: ProtocolPacketKind(rawValue: kindRaw) ?? .unknown,
+                magic: ProtocolPacketMagic(rawValue: magicRaw) ?? .unknown,
                 version: version,
                 codec: codec,
                 command: command,

@@ -9,8 +9,9 @@ public final class EasyNetRuntimeServer: @unchecked Sendable {
     private let transport: any TransportServer
     private let codec: any PacketCodec
     private let registry: DefaultPluginRegistry
+    private let outboundSender: RuntimeOutboundSender
+    private let decoderStore: RuntimeConnectionDecoderStore
     private let eventContinuation: AsyncStream<RuntimeEvent>.Continuation
-    private var decoders: [ConnectionID: any PacketDecoder] = [:]
     private var consumeTask: Task<Void, Never>?
 
     public init(
@@ -21,6 +22,19 @@ public final class EasyNetRuntimeServer: @unchecked Sendable {
         self.transport = transport
         self.codec = codec
         self.registry = registry
+        self.outboundSender = RuntimeOutboundSender(
+            codec: codec,
+            registry: registry,
+            bufferWriter: { [transport] buffer, connectionID in
+                guard let connectionID else {
+                    throw ConnectionCloseReason.transportError("missing_scoped_connection")
+                }
+                try await transport.send(buffer, to: connectionID)
+            }
+        )
+        self.decoderStore = RuntimeConnectionDecoderStore(
+            makeDecoder: { codec.makeDecoder() }
+        )
 
         let stream = AsyncStream<RuntimeEvent>.makeStream()
         self.events = stream.stream
@@ -48,92 +62,67 @@ public final class EasyNetRuntimeServer: @unchecked Sendable {
     }
 
     public func send(packet: ProtocolPacket, to connectionID: ConnectionID) async throws {
-        let buffer = try codec.encode(packet)
-        try await transport.send(buffer, to: connectionID)
+        try await outboundSender.send(packet: packet, to: connectionID)
     }
 
     public func send(message: any DomainMessage, to connectionID: ConnectionID) async throws {
-        let packet = try registry.encode(message)
-        try await send(packet: packet, to: connectionID)
+        try await outboundSender.send(message: message, to: connectionID)
     }
 
     private func consumeTransportEvents() async {
+        let emitter = RuntimeEventEmitter(continuation: eventContinuation)
+        let dispatcher = emitter.makePacketDispatcher(registry: registry)
+        let inboundPipeline = RuntimeServerInboundPipeline(
+            decoderStore: decoderStore,
+            dispatcher: dispatcher,
+            makeContext: { [unowned self] connectionContext in
+                self.makePluginContext(scopedConnection: connectionContext)
+            }
+        )
+        let lifecycleCoordinator = RuntimeServerConnectionLifecycleCoordinator(
+            decoderStore: decoderStore,
+            emitter: emitter,
+            makeContext: { [unowned self] scopedConnection in
+                self.makePluginContext(scopedConnection: scopedConnection)
+            },
+            notifyConnected: { [registry] context in
+                await registry.notifyConnected(context: context)
+            },
+            notifyDisconnected: { [registry] reason, context in
+                await registry.notifyDisconnected(reason: reason, context: context)
+            }
+        )
+
         for await event in transport.events {
             switch event {
             case .connecting:
-                eventContinuation.yield(.stateChanged(.connecting))
+                emitter.stateChanged(.connecting)
             case .connected(let connectionContext):
-                guard connectionContext.remoteAddress != nil else {
-                    eventContinuation.yield(.stateChanged(.connected))
-                    eventContinuation.yield(.connected(connectionContext))
-                    continue
-                }
-                decoders[connectionContext.id] = codec.makeDecoder()
-                eventContinuation.yield(.connected(connectionContext))
-                let context = RuntimeServerPluginContext(owner: self, scopedConnection: connectionContext)
-                await registry.notifyConnected(context: context)
+                await lifecycleCoordinator.handleConnected(connectionContext)
             case .disconnected(let connectionContext, let reason):
-                if let connectionContext {
-                    decoders.removeValue(forKey: connectionContext.id)
-                }
-                eventContinuation.yield(.disconnected(connectionContext, reason))
-                let context = RuntimeServerPluginContext(owner: self, scopedConnection: connectionContext)
-                await registry.notifyDisconnected(reason: reason, context: context)
+                await lifecycleCoordinator.handleDisconnected(connectionContext, reason: reason)
             case .failed(let error):
-                eventContinuation.yield(.stateChanged(.failed))
-                eventContinuation.yield(.failure(error))
+                emitter.stateChanged(.failed)
+                emitter.failure(error)
             case .inboundBytes(let connectionContext, var buffer):
                 do {
-                    var decoder = decoders[connectionContext.id] ?? codec.makeDecoder()
-                    let packets = try decoder.decode(&buffer)
-                    decoders[connectionContext.id] = decoder
-
-                    let context = RuntimeServerPluginContext(owner: self, scopedConnection: connectionContext)
-                    for packet in packets {
-                        eventContinuation.yield(.packet(connectionContext, packet))
-                        if let message = try registry.decode(packet) {
-                            eventContinuation.yield(.message(connectionContext, message))
-                        }
-                        for handler in registry.matchingHandlers(for: packet) {
-                            try await handler.handle(packet, context: context)
-                        }
-                    }
+                    try await inboundPipeline.process(&buffer, from: connectionContext)
                 } catch {
-                    eventContinuation.yield(.failure(error))
+                    emitter.failure(error)
                 }
             }
         }
     }
-}
 
-private final class RuntimeServerPluginContext: PluginContext, @unchecked Sendable {
-    private unowned let owner: EasyNetRuntimeServer
-    let connectionContext: ConnectionContext?
-
-    init(owner: EasyNetRuntimeServer, scopedConnection: ConnectionContext?) {
-        self.owner = owner
-        self.connectionContext = scopedConnection
-    }
-
-    func send(packet: ProtocolPacket) async throws {
-        guard let connectionID = connectionContext?.id else {
-            throw ConnectionCloseReason.transportError("missing_scoped_connection")
-        }
-        try await owner.send(packet: packet, to: connectionID)
-    }
-
-    func send(message: any DomainMessage) async throws {
-        guard let connectionID = connectionContext?.id else {
-            throw ConnectionCloseReason.transportError("missing_scoped_connection")
-        }
-        try await owner.send(message: message, to: connectionID)
-    }
-
-    func send(packet: ProtocolPacket, to connectionID: ConnectionID) async throws {
-        try await owner.send(packet: packet, to: connectionID)
-    }
-
-    func send(message: any DomainMessage, to connectionID: ConnectionID) async throws {
-        try await owner.send(message: message, to: connectionID)
+    private func makePluginContext(scopedConnection: ConnectionContext?) -> RuntimePluginContextAdapter {
+        RuntimePluginContextAdapter(
+            scopedConnectionProvider: { scopedConnection },
+            packetSender: { [unowned self] packet, connectionID in
+                try await self.send(packet: packet, to: connectionID)
+            },
+            messageSender: { [unowned self] message, connectionID in
+                try await self.send(message: message, to: connectionID)
+            }
+        )
     }
 }

@@ -27,7 +27,7 @@ enum EasyNetTerminalServerDemoMain {
                 case .disconnected(let context, let reason):
                     print("[server] disconnected: \(context?.remoteAddress ?? context?.localAddress ?? "unknown"), reason: \(reason)")
                 case .packet(_, let packet):
-                    print("[server] packet command=\(packet.header.command) kind=\(packet.header.kind)")
+                    print("[server] packet command=\(packet.header.command) magic=\(packet.header.magic)")
                 case .message(let context, let message):
                     if let text = message as? TerminalTextMessage {
                         print("[server] message from \(context?.remoteAddress ?? "unknown"): \(text.text)")

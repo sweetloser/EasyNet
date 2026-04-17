@@ -7,10 +7,10 @@ public final class EasyNetRuntimeClient: @unchecked Sendable {
     public let events: AsyncStream<RuntimeEvent>
 
     private let transport: any TransportClient
-    private let codec: any PacketCodec
     private let registry: DefaultPluginRegistry
+    private let outboundSender: RuntimeOutboundSender
     private let eventContinuation: AsyncStream<RuntimeEvent>.Continuation
-    private let requestCoordinator = RequestCoordinator()
+    private let requestOrchestrator = RuntimeRequestOrchestrator()
     private var decoder: any PacketDecoder
     private var connectionContext: ConnectionContext?
     private var consumeTask: Task<Void, Never>?
@@ -21,8 +21,17 @@ public final class EasyNetRuntimeClient: @unchecked Sendable {
         registry: DefaultPluginRegistry
     ) {
         self.transport = transport
-        self.codec = codec
         self.registry = registry
+        self.outboundSender = RuntimeOutboundSender(
+            codec: codec,
+            registry: registry,
+            bufferWriter: { [transport] buffer, connectionID in
+                guard connectionID == nil else {
+                    throw ConnectionCloseReason.transportError("connection_not_found")
+                }
+                try await transport.send(buffer)
+            }
+        )
         self.decoder = codec.makeDecoder()
 
         let stream = AsyncStream<RuntimeEvent>.makeStream()
@@ -51,107 +60,151 @@ public final class EasyNetRuntimeClient: @unchecked Sendable {
     }
 
     public func send(packet: ProtocolPacket) async throws {
-        let buffer = try codec.encode(packet)
-        try await transport.send(buffer)
+        try await outboundSender.send(packet: packet)
     }
 
     public func send(message: any DomainMessage) async throws {
-        let packet = try registry.encode(message)
-        try await send(packet: packet)
+        try await outboundSender.send(message: message)
     }
 
     public func request(_ packet: ProtocolPacket) async throws -> ProtocolPacket {
-        try await withCheckedThrowingContinuation { continuation in
-            Task {
-                await requestCoordinator.register(RequestKey(session: packet.header.session), continuation: continuation)
-                do {
-                    try await send(packet: packet)
-                } catch {
-                    await requestCoordinator.failAll(error)
-                }
-            }
+        try await request(packet, timeout: nil)
+    }
+
+    public func request(_ packet: ProtocolPacket, timeout: TimeInterval?) async throws -> ProtocolPacket {
+        try await request(packet, options: RuntimeRequestOptions(timeout: timeout))
+    }
+
+    public func request(_ packet: ProtocolPacket, options: RuntimeRequestOptions) async throws -> ProtocolPacket {
+        try await requestOrchestrator.request(packet, options: options) { [unowned self] packet in
+            try await self.send(packet: packet)
         }
     }
 
+    public func request(message: any DomainMessage) async throws -> ProtocolPacket {
+        try await request(message: message, timeout: nil)
+    }
+
+    public func request(message: any DomainMessage, timeout: TimeInterval?) async throws -> ProtocolPacket {
+        try await request(message: message, options: RuntimeRequestOptions(timeout: timeout))
+    }
+
+    public func request(message: any DomainMessage, options: RuntimeRequestOptions) async throws -> ProtocolPacket {
+        let packet = try registry.encode(message)
+        return try await request(packet, options: options)
+    }
+
+    public func request<Response: DomainMessage>(
+        message: any DomainMessage,
+        as responseType: Response.Type,
+        timeout: TimeInterval? = nil
+    ) async throws -> Response {
+        try await request(
+            message: message,
+            as: responseType,
+            options: RuntimeRequestOptions(timeout: timeout)
+        )
+    }
+
+    public func request<Response: DomainMessage>(
+        message: any DomainMessage,
+        as responseType: Response.Type,
+        options: RuntimeRequestOptions
+    ) async throws -> Response {
+        let responsePacket = try await request(message: message, options: options)
+        guard let responseMessage = try registry.decode(responsePacket) else {
+            throw RuntimeRequestError.responseNotMapped(command: responsePacket.header.command)
+        }
+        guard let typedResponse = responseMessage as? Response else {
+            throw RuntimeRequestError.unexpectedResponseType(
+                expected: String(reflecting: responseType),
+                actual: String(reflecting: type(of: responseMessage))
+            )
+        }
+        return typedResponse
+    }
+
     private func consumeTransportEvents() async {
-        let context = RuntimePluginContext(owner: self)
+        let emitter = RuntimeEventEmitter(continuation: eventContinuation)
+        let requestOrchestrator = self.requestOrchestrator
+        let dispatcher = emitter.makePacketDispatcher(
+            registry: registry,
+            beforeHandle: { packet in
+                await requestOrchestrator.resolveIfNeeded(packet)
+            }
+        )
 
         for await event in transport.events {
             switch event {
             case .connecting:
-                eventContinuation.yield(.stateChanged(.connecting))
+                emitter.stateChanged(.connecting)
             case .connected(let connectionContext):
                 self.connectionContext = connectionContext
-                eventContinuation.yield(.stateChanged(.connected))
-                eventContinuation.yield(.connected(connectionContext))
+                emitter.stateChanged(.connected)
+                emitter.connected(connectionContext)
+                let context = makePluginContext(scopedConnection: connectionContext)
                 await registry.notifyConnected(context: context)
             case .disconnected(let connectionContext, let reason):
                 self.connectionContext = nil
-                eventContinuation.yield(.stateChanged(.disconnected))
-                eventContinuation.yield(.disconnected(connectionContext, reason))
-                await requestCoordinator.failAll(reason)
+                emitter.stateChanged(.disconnected)
+                emitter.disconnected(connectionContext, reason: reason)
+                await requestOrchestrator.failAll(reason)
+                let context = makePluginContext(scopedConnection: connectionContext)
                 await registry.notifyDisconnected(reason: reason, context: context)
             case .failed(let error):
-                eventContinuation.yield(.stateChanged(.failed))
-                eventContinuation.yield(.failure(error))
-                await requestCoordinator.failAll(error)
+                emitter.stateChanged(.failed)
+                emitter.failure(error)
+                await requestOrchestrator.failAll(error)
             case .inboundBytes(let connectionContext, var buffer):
                 do {
                     let packets = try decoder.decode(&buffer)
-                    for packet in packets {
-                        eventContinuation.yield(.packet(connectionContext, packet))
-                        if packet.header.kind == .response {
-                            await requestCoordinator.resolve(packet)
-                        }
-                        if let message = try registry.decode(packet) {
-                            eventContinuation.yield(.message(connectionContext, message))
-                        }
-                        for handler in registry.matchingHandlers(for: packet) {
-                            try await handler.handle(packet, context: context)
-                        }
-                    }
+                    let context = makePluginContext(scopedConnection: connectionContext)
+                    try await dispatcher.dispatch(packets, from: connectionContext, context: context)
                 } catch {
-                    eventContinuation.yield(.failure(error))
+                    emitter.failure(error)
                 }
             }
         }
     }
 
+    private func makePluginContext(scopedConnection: ConnectionContext?) -> RuntimePluginContextAdapter {
+        RuntimePluginContextAdapter(
+            scopedConnectionProvider: { [weak self] in
+                if let scopedConnection {
+                    return scopedConnection
+                }
+                return self?.currentConnectionContext()
+            },
+            packetSender: { [weak self] packet, connectionID in
+                guard let self else {
+                    throw ConnectionCloseReason.transportError("runtime_deallocated")
+                }
+                try await self.send(packet: packet, to: connectionID)
+            },
+            messageSender: { [weak self] message, connectionID in
+                guard let self else {
+                    throw ConnectionCloseReason.transportError("runtime_deallocated")
+                }
+                try await self.send(message: message, to: connectionID)
+            }
+        )
+    }
+
+    private func send(packet: ProtocolPacket, to connectionID: ConnectionID) async throws {
+        guard currentConnectionContext()?.id == connectionID else {
+            throw ConnectionCloseReason.transportError("connection_not_found")
+        }
+        try await outboundSender.send(packet: packet)
+    }
+
+    private func send(message: any DomainMessage, to connectionID: ConnectionID) async throws {
+        guard currentConnectionContext()?.id == connectionID else {
+            throw ConnectionCloseReason.transportError("connection_not_found")
+        }
+        try await outboundSender.send(message: message)
+    }
+
     fileprivate func currentConnectionContext() -> ConnectionContext? {
         connectionContext
-    }
-}
-
-private final class RuntimePluginContext: PluginContext, @unchecked Sendable {
-    private unowned let owner: EasyNetRuntimeClient
-
-    init(owner: EasyNetRuntimeClient) {
-        self.owner = owner
-    }
-
-    var connectionContext: ConnectionContext? {
-        owner.currentConnectionContext()
-    }
-
-    func send(packet: ProtocolPacket) async throws {
-        try await owner.send(packet: packet)
-    }
-
-    func send(message: any DomainMessage) async throws {
-        try await owner.send(message: message)
-    }
-
-    func send(packet: ProtocolPacket, to connectionID: ConnectionID) async throws {
-        if owner.currentConnectionContext()?.id != connectionID {
-            throw ConnectionCloseReason.transportError("connection_not_found")
-        }
-        try await owner.send(packet: packet)
-    }
-
-    func send(message: any DomainMessage, to connectionID: ConnectionID) async throws {
-        if owner.currentConnectionContext()?.id != connectionID {
-            throw ConnectionCloseReason.transportError("connection_not_found")
-        }
-        try await owner.send(message: message)
     }
 }

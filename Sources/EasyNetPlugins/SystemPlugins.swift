@@ -32,7 +32,7 @@ public final class SystemHandshakePlugin: ProtocolPlugin, PacketMapper, PacketRo
     }
 
     public func didConnect(context: PluginContext) async {
-        let header = ProtocolHeader(kind: .request, command: SystemCommand.handshake)
+        let header = ProtocolHeader(magic: .request, command: SystemCommand.handshake)
         let packet = ProtocolPacket(header: header)
         try? await context.send(packet: packet)
     }
@@ -41,7 +41,7 @@ public final class SystemHandshakePlugin: ProtocolPlugin, PacketMapper, PacketRo
         guard packet.header.command == SystemCommand.handshake else {
             return nil
         }
-        return HandshakeMessage(acknowledged: packet.header.kind == .response)
+        return HandshakeMessage(acknowledged: packet.header.magic == .response)
     }
 
     public func encode(_ message: any DomainMessage) throws -> ProtocolPacket? {
@@ -49,16 +49,16 @@ public final class SystemHandshakePlugin: ProtocolPlugin, PacketMapper, PacketRo
             return nil
         }
 
-        let kind: ProtocolPacketKind = message.acknowledged ? .response : .request
-        return ProtocolPacket(header: ProtocolHeader(kind: kind, command: SystemCommand.handshake))
+        let magic: ProtocolPacketMagic = message.acknowledged ? .response : .request
+        return ProtocolPacket(header: ProtocolHeader(magic: magic, command: SystemCommand.handshake))
     }
 
     public func canHandle(_ packet: ProtocolPacket) -> Bool {
-        packet.header.command == SystemCommand.handshake && packet.header.kind == .request
+        packet.header.command == SystemCommand.handshake && packet.header.magic == .request
     }
 
     public func handle(_ packet: ProtocolPacket, context: PluginContext) async throws {
-        let response = ProtocolPacket(header: ProtocolHeader(kind: .response, command: SystemCommand.handshake, session: packet.header.session))
+        let response = ProtocolPacket(header: ProtocolHeader(magic: .response, command: SystemCommand.handshake, session: packet.header.session))
         try await context.send(packet: response)
     }
 }
@@ -84,15 +84,15 @@ public final class SystemHeartbeatPlugin: ProtocolPlugin, PacketMapper, PacketRo
         guard message is HeartbeatMessage else {
             return nil
         }
-        return ProtocolPacket(header: ProtocolHeader(kind: .event, command: SystemCommand.heartbeat))
+        return ProtocolPacket(header: ProtocolHeader(magic: .event, command: SystemCommand.heartbeat))
     }
 
     public func canHandle(_ packet: ProtocolPacket) -> Bool {
-        packet.header.command == SystemCommand.heartbeat && packet.header.kind == .request
+        packet.header.command == SystemCommand.heartbeat && packet.header.magic == .request
     }
 
     public func handle(_ packet: ProtocolPacket, context: PluginContext) async throws {
-        let response = ProtocolPacket(header: ProtocolHeader(kind: .response, command: SystemCommand.heartbeat, session: packet.header.session))
+        let response = ProtocolPacket(header: ProtocolHeader(magic: .response, command: SystemCommand.heartbeat, session: packet.header.session))
         try await context.send(packet: response)
     }
 }

@@ -10,7 +10,7 @@ public final class EasyNetBuilder {
     private var clientConfiguration: TransportClientConfiguration?
     private var serverConfiguration: TransportServerConfiguration?
     private var codec: any PacketCodec = EasyNetPacketCodec()
-    private let registry = DefaultPluginRegistry()
+    private var pluginRegistrations: [PluginRegistration] = []
 
     public init() {}
 
@@ -34,7 +34,13 @@ public final class EasyNetBuilder {
 
     @discardableResult
     public func addPlugin(_ plugin: any ProtocolPlugin) -> EasyNetBuilder {
-        registry.install(plugin)
+        pluginRegistrations.append(.instance(plugin))
+        return self
+    }
+
+    @discardableResult
+    public func addPluginFactory(_ makePlugin: @escaping () -> any ProtocolPlugin) -> EasyNetBuilder {
+        pluginRegistrations.append(.factory(makePlugin))
         return self
     }
 
@@ -43,7 +49,7 @@ public final class EasyNetBuilder {
             throw EasyNetBuilderError.missingClientConfiguration
         }
         let transport = NIOTransportClient(configuration: configuration)
-        let runtime = EasyNetRuntimeClient(transport: transport, codec: codec, registry: registry)
+        let runtime = EasyNetRuntimeClient(transport: transport, codec: codec, registry: makeRegistrySnapshot())
         return EasyNetClient(runtime: runtime)
     }
 
@@ -52,8 +58,30 @@ public final class EasyNetBuilder {
             throw EasyNetBuilderError.missingServerConfiguration
         }
         let transport = NIOTransportServer(configuration: configuration)
-        let runtime = EasyNetRuntimeServer(transport: transport, codec: codec, registry: registry)
+        let runtime = EasyNetRuntimeServer(transport: transport, codec: codec, registry: makeRegistrySnapshot())
         return EasyNetServer(runtime: runtime)
+    }
+
+    private func makeRegistrySnapshot() -> DefaultPluginRegistry {
+        let registry = DefaultPluginRegistry()
+        for registration in pluginRegistrations {
+            registry.install(registration.makePlugin())
+        }
+        return registry
+    }
+}
+
+private enum PluginRegistration {
+    case instance(any ProtocolPlugin)
+    case factory(() -> any ProtocolPlugin)
+
+    func makePlugin() -> any ProtocolPlugin {
+        switch self {
+        case .instance(let plugin):
+            return plugin
+        case .factory(let makePlugin):
+            return makePlugin()
+        }
     }
 }
 
@@ -72,12 +100,20 @@ public final class EasyNetClient {
         self.events = runtime.events
     }
 
-    public func connect() {
+    public func start() {
         runtime.start()
     }
 
-    public func disconnect() {
+    public func stop() {
         runtime.stop()
+    }
+
+    public func connect() {
+        start()
+    }
+
+    public func disconnect() {
+        stop()
     }
 
     public func send(packet: ProtocolPacket) async throws {
@@ -90,6 +126,42 @@ public final class EasyNetClient {
 
     public func request(_ packet: ProtocolPacket) async throws -> ProtocolPacket {
         try await runtime.request(packet)
+    }
+
+    public func request(_ packet: ProtocolPacket, timeout: TimeInterval?) async throws -> ProtocolPacket {
+        try await runtime.request(packet, timeout: timeout)
+    }
+
+    public func request(_ packet: ProtocolPacket, options: RuntimeRequestOptions) async throws -> ProtocolPacket {
+        try await runtime.request(packet, options: options)
+    }
+
+    public func request(message: any DomainMessage) async throws -> ProtocolPacket {
+        try await runtime.request(message: message)
+    }
+
+    public func request(message: any DomainMessage, timeout: TimeInterval?) async throws -> ProtocolPacket {
+        try await runtime.request(message: message, timeout: timeout)
+    }
+
+    public func request(message: any DomainMessage, options: RuntimeRequestOptions) async throws -> ProtocolPacket {
+        try await runtime.request(message: message, options: options)
+    }
+
+    public func request<Response: DomainMessage>(
+        message: any DomainMessage,
+        as responseType: Response.Type,
+        timeout: TimeInterval? = nil
+    ) async throws -> Response {
+        try await runtime.request(message: message, as: responseType, timeout: timeout)
+    }
+
+    public func request<Response: DomainMessage>(
+        message: any DomainMessage,
+        as responseType: Response.Type,
+        options: RuntimeRequestOptions
+    ) async throws -> Response {
+        try await runtime.request(message: message, as: responseType, options: options)
     }
 }
 
@@ -111,11 +183,19 @@ public final class EasyNetServer {
         runtime.stop()
     }
 
-    public func send(_ packet: ProtocolPacket, to connectionID: ConnectionID) async throws {
+    public func send(packet: ProtocolPacket, to connectionID: ConnectionID) async throws {
         try await runtime.send(packet: packet, to: connectionID)
     }
 
-    public func send(_ message: any DomainMessage, to connectionID: ConnectionID) async throws {
+    public func send(message: any DomainMessage, to connectionID: ConnectionID) async throws {
         try await runtime.send(message: message, to: connectionID)
+    }
+
+    public func send(_ packet: ProtocolPacket, to connectionID: ConnectionID) async throws {
+        try await send(packet: packet, to: connectionID)
+    }
+
+    public func send(_ message: any DomainMessage, to connectionID: ConnectionID) async throws {
+        try await send(message: message, to: connectionID)
     }
 }

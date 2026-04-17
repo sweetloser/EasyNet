@@ -1,7 +1,7 @@
 import Foundation
 import NIOCore
 
-public enum ProtocolPacketKind: UInt16, Sendable {
+public enum ProtocolPacketMagic: UInt16, Sendable {
     case request = 0x0001
     case response = 0x0002
     case event = 0x0003
@@ -16,7 +16,7 @@ public enum ProtocolCodecMethod: UInt8, Sendable {
 public struct ProtocolHeader: Sendable, CustomStringConvertible {
     public static let byteLength = 20
 
-    public var kind: ProtocolPacketKind
+    public var magic: ProtocolPacketMagic
     public var version: UInt8
     public var codec: ProtocolCodecMethod
     public var command: UInt16
@@ -28,7 +28,7 @@ public struct ProtocolHeader: Sendable, CustomStringConvertible {
     public var length: UInt32
 
     public init(
-        kind: ProtocolPacketKind = .request,
+        magic: ProtocolPacketMagic = .request,
         version: UInt8 = 1,
         codec: ProtocolCodecMethod = .binary,
         command: UInt16,
@@ -39,7 +39,7 @@ public struct ProtocolHeader: Sendable, CustomStringConvertible {
         checksum: UInt16 = 0,
         length: UInt32 = 0
     ) {
-        self.kind = kind
+        self.magic = magic
         self.version = version
         self.codec = codec
         self.command = command
@@ -52,7 +52,7 @@ public struct ProtocolHeader: Sendable, CustomStringConvertible {
     }
 
     public var description: String {
-        "ProtocolHeader(kind: \(kind), version: \(version), codec: \(codec), command: \(command), session: \(session), flags: \(flags), sequence: \(sequence), status: \(status), checksum: \(checksum), length: \(length))"
+        "ProtocolHeader(magic: \(magic), version: \(version), codec: \(codec), command: \(command), session: \(session), flags: \(flags), sequence: \(sequence), status: \(status), checksum: \(checksum), length: \(length))"
     }
 }
 

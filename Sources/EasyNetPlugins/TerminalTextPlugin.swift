@@ -8,12 +8,12 @@ public enum TerminalDemoCommand {
 
 public struct TerminalTextMessage: DomainMessage {
     public let text: String
-    public let kind: ProtocolPacketKind
+    public let magic: ProtocolPacketMagic
     public let session: UInt16
 
-    public init(text: String, kind: ProtocolPacketKind = .event, session: UInt16 = 0) {
+    public init(text: String, magic: ProtocolPacketMagic = .event, session: UInt16 = 0) {
         self.text = text
-        self.kind = kind
+        self.magic = magic
         self.session = session
     }
 }
@@ -21,10 +21,15 @@ public struct TerminalTextMessage: DomainMessage {
 public final class TerminalTextPlugin: ProtocolPlugin, PacketMapper, PacketRouteHandler {
     public let key = "demo.terminal.text"
 
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private let serializer: any PayloadSerializer
 
-    public init() {}
+    public init() {
+        self.serializer = JSONPayloadSerializer()
+    }
+
+    public init(serializer: any PayloadSerializer) {
+        self.serializer = serializer
+    }
 
     public func setup(in registry: PluginRegistry) {
         registry.register(mapper: self)
@@ -35,10 +40,10 @@ public final class TerminalTextPlugin: ProtocolPlugin, PacketMapper, PacketRoute
         guard packet.header.command == TerminalDemoCommand.textMessage else {
             return nil
         }
-        let payload = try decoder.decode(TerminalTextPayload.self, from: Data(packet.payload))
+        let payload = try serializer.decode(TerminalTextPayload.self, from: packet.payload)
         return TerminalTextMessage(
             text: payload.text,
-            kind: packet.header.kind,
+            magic: packet.header.magic,
             session: packet.header.session
         )
     }
@@ -48,19 +53,19 @@ public final class TerminalTextPlugin: ProtocolPlugin, PacketMapper, PacketRoute
             return nil
         }
         let payload = TerminalTextPayload(text: message.text)
-        let data = try encoder.encode(payload)
+        let data = try serializer.encode(payload)
         let header = ProtocolHeader(
-            kind: message.kind,
+            magic: message.magic,
             version: 1,
             codec: .json,
             command: TerminalDemoCommand.textMessage,
             session: message.session
         )
-        return ProtocolPacket(header: header, payload: [UInt8](data))
+        return ProtocolPacket(header: header, payload: data)
     }
 
     public func canHandle(_ packet: ProtocolPacket) -> Bool {
-        packet.header.command == TerminalDemoCommand.textMessage && packet.header.kind == .request
+        packet.header.command == TerminalDemoCommand.textMessage && packet.header.magic == .request
     }
 
     public func handle(_ packet: ProtocolPacket, context: PluginContext) async throws {
@@ -70,7 +75,7 @@ public final class TerminalTextPlugin: ProtocolPlugin, PacketMapper, PacketRoute
 
         let response = TerminalTextMessage(
             text: "echo: \(message.text)",
-            kind: .response,
+            magic: .response,
             session: packet.header.session
         )
         try await context.send(message: response)

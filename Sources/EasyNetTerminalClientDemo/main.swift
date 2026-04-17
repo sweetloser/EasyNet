@@ -27,7 +27,7 @@ enum EasyNetTerminalClientDemoMain {
                 case .disconnected(_, let reason):
                     print("[client] disconnected: \(reason)")
                 case .packet(_, let packet):
-                    print("[client] packet command=\(packet.header.command) kind=\(packet.header.kind)")
+                    print("[client] packet command=\(packet.header.command) magic=\(packet.header.magic)")
                 case .message(_, let message):
                     if let text = message as? TerminalTextMessage {
                         print("[client] received: \(text.text)")
@@ -46,7 +46,7 @@ enum EasyNetTerminalClientDemoMain {
         if let autoMessage = options.autoMessage {
             print("Auto mode enabled, sending one message and waiting for response")
             try await connectionSignal.wait(timeoutSeconds: options.timeoutSeconds)
-            let request = TerminalTextMessage(text: autoMessage, kind: .request, session: 1)
+            let request = TerminalTextMessage(text: autoMessage, magic: .request, session: 1)
             try await client.send(message: request)
             let response = try await messageSignal.wait(timeoutSeconds: options.timeoutSeconds)
             print("[client] auto response confirmed: \(response)")
@@ -60,7 +60,7 @@ enum EasyNetTerminalClientDemoMain {
 
             var session: UInt16 = 1
             for text in options.autoMessages {
-                let request = TerminalTextMessage(text: text, kind: .request, session: session)
+                let request = TerminalTextMessage(text: text, magic: .request, session: session)
                 try await client.send(message: request)
                 let response = try await messageSignal.waitNext(timeoutSeconds: options.timeoutSeconds)
                 print("[client] auto response confirmed: \(response)")
@@ -74,6 +74,7 @@ enum EasyNetTerminalClientDemoMain {
             return
         }
 
+        try await connectionSignal.wait(timeoutSeconds: options.timeoutSeconds)
         print("Type text and press Enter, type /quit to exit")
 
         var session: UInt16 = 1
@@ -85,7 +86,7 @@ enum EasyNetTerminalClientDemoMain {
             if line.isEmpty {
                 continue
             }
-            let message = TerminalTextMessage(text: line, kind: .request, session: session)
+            let message = TerminalTextMessage(text: line, magic: .request, session: session)
             try await client.send(message: message)
             session &+= 1
             if session == 0 {
