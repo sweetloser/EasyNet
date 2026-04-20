@@ -1,5 +1,11 @@
 # EasyNet
 
+[![CI](https://github.com/sweetloser/EasyNet/actions/workflows/ci.yml/badge.svg)](https://github.com/sweetloser/EasyNet/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/sweetloser/EasyNet?include_prereleases&sort=semver)](https://github.com/sweetloser/EasyNet/releases)
+[![License](https://img.shields.io/github/license/sweetloser/EasyNet)](https://github.com/sweetloser/EasyNet/blob/main/LICENSE)
+[![Swift](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)](https://www.swift.org/)
+[![Platforms](https://img.shields.io/badge/Platforms-macOS%2012%2B%20%7C%20iOS%2013%2B-64748B)](https://github.com/sweetloser/EasyNet)
+
 EasyNet 是一个基于 SwiftNIO 的分层通信 SDK，提供了传输层、协议层、插件层和运行时编排层的清晰划分，适合构建自定义 TCP 协议、插件化消息处理链路以及带请求响应语义的通信客户端/服务端。
 
 当前版本已经可以作为一个可运行、可测试、可扩展的 Swift Package 使用，并附带终端 demo 作为最小接入示例。

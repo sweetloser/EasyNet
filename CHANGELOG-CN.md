@@ -4,6 +4,20 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。
 
+## Unreleased
+
+### 新增
+
+- 暂无。
+
+### 变更
+
+- 暂无。
+
+### 测试
+
+- 暂未执行。
+
 ## 0.1.0-beta.2 - 2026-04-20
 
 ### 新增
