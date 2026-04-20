@@ -42,6 +42,39 @@ final class PluginIntegrationTests: XCTestCase {
         XCTAssertEqual(response.text, "echo: ping")
     }
 
+    func testDemoChatPluginEncodeAndDecode() throws {
+        let registry = DefaultPluginRegistry()
+        registry.install(DemoChatPlugin())
+
+        let message = DemoChatMessage(room: "ops", text: "hello", magic: .request, session: 5)
+        let packet = try registry.encode(message)
+        let decoded = try registry.decode(packet) as? DemoChatMessage
+
+        XCTAssertEqual(packet.header.command, DemoChatCommand.message)
+        XCTAssertEqual(packet.header.magic, .request)
+        XCTAssertEqual(packet.header.session, 5)
+        XCTAssertEqual(decoded?.room, "ops")
+        XCTAssertEqual(decoded?.text, "hello")
+    }
+
+    func testDemoChatPluginHandlesRequestWithAckResponse() async throws {
+        let plugin = DemoChatPlugin()
+        let context = MockPluginContext()
+        let packet = try XCTUnwrap(
+            try plugin.encode(DemoChatMessage(room: "ops", text: "ping", magic: .request, session: 21))
+        )
+
+        try await plugin.handle(packet, context: context)
+
+        let sentMessages = await context.sentMessages
+        XCTAssertEqual(sentMessages.count, 1)
+        let response = try XCTUnwrap(sentMessages.first as? DemoChatMessage)
+        XCTAssertEqual(response.room, "ops")
+        XCTAssertEqual(response.magic, .response)
+        XCTAssertEqual(response.session, 21)
+        XCTAssertEqual(response.text, "ack: ping")
+    }
+
     func testTerminalProductsBuildAndCommunicate() throws {
         let packageRoot = try packageRootURL()
         let serverURL = try ensureBuiltProduct(
@@ -138,5 +171,56 @@ final class PluginIntegrationTests: XCTestCase {
         )
 
         client.sendStdinLine("/quit")
+    }
+
+    func testTerminalProductsBuildAndCommunicateWithCustomMessagePlugin() throws {
+        let packageRoot = try packageRootURL()
+        let serverURL = try ensureBuiltProduct(
+            named: "EasyNetTerminalServerDemo",
+            in: packageRoot
+        )
+        let clientURL = try ensureBuiltProduct(
+            named: "EasyNetTerminalClientDemo",
+            in: packageRoot
+        )
+
+        let port = 26000 + Int.random(in: 0...999)
+
+        let server = try RunningProcess(
+            executableURL: serverURL,
+            arguments: ["\(port)"],
+            currentDirectoryURL: packageRoot
+        )
+        defer { server.terminate() }
+
+        XCTAssertTrue(
+            server.waitForOutput(containing: "[server] listening on", timeout: 10),
+            "Server did not start listening in time. Output:\n\(server.output)"
+        )
+
+        let clientResult = try runCommand(
+            executable: clientURL.path,
+            arguments: [
+                "127.0.0.1",
+                "\(port)",
+                "--custom-message",
+                "business-ping",
+                "--custom-room",
+                "ops",
+                "--timeout",
+                "5",
+            ],
+            currentDirectoryURL: packageRoot,
+            timeout: 20
+        )
+
+        XCTAssertTrue(
+            clientResult.output.contains("[client] custom response confirmed room=ops text=ack: business-ping"),
+            "Client did not confirm custom plugin response. Output:\n\(clientResult.output)"
+        )
+        XCTAssertTrue(
+            server.waitForOutput(containing: "room=ops: business-ping", timeout: 5),
+            "Server did not log custom business message. Output:\n\(server.output)"
+        )
     }
 }

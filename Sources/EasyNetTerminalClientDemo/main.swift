@@ -11,11 +11,11 @@ enum EasyNetTerminalClientDemoMain {
         let client = try EasyNetBuilder()
             .useTCPClient(host: options.host, port: options.port)
             .addPlugin(TerminalTextPlugin())
+            .addPlugin(DemoChatPlugin())
             .buildClient()
 
         let connectionSignal = AsyncSignal<Void>()
         let messageSignal = AsyncSignal<String>()
-
         Task {
             for await event in client.events {
                 switch event {
@@ -32,6 +32,8 @@ enum EasyNetTerminalClientDemoMain {
                     if let text = message as? TerminalTextMessage {
                         print("[client] received: \(text.text)")
                         await messageSignal.fire(text.text)
+                    } else if let custom = message as? DemoChatMessage {
+                        print("[client] custom received room=\(custom.room) text=\(custom.text)")
                     }
                 case .traffic(_, let stats):
                     print("[client] traffic read=\(String(format: "%.2f", stats.readKBps))KB/s write=\(String(format: "%.2f", stats.writeKBps))KB/s")
@@ -52,6 +54,23 @@ enum EasyNetTerminalClientDemoMain {
             try await client.send(message: request)
             let response = try await messageSignal.wait(timeoutSeconds: options.timeoutSeconds)
             print("[client] auto response confirmed: \(response)")
+            client.disconnect()
+            return
+        }
+
+        if let customMessage = options.customMessage {
+            print("Custom message mode enabled, sending one business message and waiting for typed response")
+            try await connectionSignal.wait(timeoutSeconds: options.timeoutSeconds)
+            let response = try await client.request(
+                message: DemoChatMessage(
+                    room: options.customRoom,
+                    text: customMessage,
+                    magic: .request
+                ),
+                as: DemoChatMessage.self,
+                timeout: options.timeoutSeconds
+            )
+            print("[client] custom response confirmed room=\(response.room) text=\(response.text)")
             client.disconnect()
             return
         }
@@ -105,12 +124,16 @@ private struct ClientCLIOptions {
     let port: Int
     let autoMessage: String?
     let autoMessages: [String]
+    let customMessage: String?
+    let customRoom: String
     let timeoutSeconds: TimeInterval
 
     init(arguments: [String]) {
         var positionals: [String] = []
         var autoMessage: String?
         var autoMessages: [String] = []
+        var customMessage: String?
+        var customRoom = "demo-room"
         var timeoutSeconds: TimeInterval = 5
 
         var index = 0
@@ -129,6 +152,16 @@ private struct ClientCLIOptions {
                         .map(String.init)
                     index += 1
                 }
+            case "--custom-message":
+                if index + 1 < arguments.count {
+                    customMessage = arguments[index + 1]
+                    index += 1
+                }
+            case "--custom-room":
+                if index + 1 < arguments.count {
+                    customRoom = arguments[index + 1]
+                    index += 1
+                }
             case "--timeout":
                 if index + 1 < arguments.count, let value = TimeInterval(arguments[index + 1]) {
                     timeoutSeconds = value
@@ -144,6 +177,8 @@ private struct ClientCLIOptions {
         self.port = Int(positionals.dropFirst().first ?? "") ?? 9999
         self.autoMessage = autoMessage
         self.autoMessages = autoMessages
+        self.customMessage = customMessage
+        self.customRoom = customRoom
         self.timeoutSeconds = timeoutSeconds
     }
 }

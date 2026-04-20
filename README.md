@@ -1,10 +1,11 @@
-# EasyNet
 
 [![CI](https://github.com/sweetloser/EasyNet/actions/workflows/ci.yml/badge.svg)](https://github.com/sweetloser/EasyNet/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/sweetloser/EasyNet?include_prereleases&sort=semver)](https://github.com/sweetloser/EasyNet/releases)
 [![License](https://img.shields.io/github/license/sweetloser/EasyNet)](https://github.com/sweetloser/EasyNet/blob/main/LICENSE)
 [![Swift](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)](https://www.swift.org/)
 [![Platforms](https://img.shields.io/badge/Platforms-macOS%2012%2B%20%7C%20iOS%2013%2B-64748B)](https://github.com/sweetloser/EasyNet)
+
+# EasyNet
 
 EasyNet 是一个基于 SwiftNIO 的分层通信 SDK，提供了传输层、协议层、插件层和运行时编排层的清晰划分，适合构建自定义 TCP 协议、插件化消息处理链路以及带请求响应语义的通信客户端/服务端。
 
@@ -693,6 +694,81 @@ let client = try EasyNetBuilder()
     .buildClient()
 ```
 
+### 自定义消息插件完整用例
+
+下面给出一个更完整的业务接入示例，演示同一个自定义插件如何同时安装到 server 和 client，并结合请求接口与事件流一起使用。
+
+仓库中的 terminal demo 也已经内置了一个同类业务示例插件 `DemoChatPlugin`，你可以直接运行 demo 命令体验“自定义消息 -> 插件编解码 -> typed response”这条链路。
+
+服务端：
+
+```swift
+import EasyNet
+
+let server = try EasyNetBuilder()
+    .useTCPServer(host: "127.0.0.1", port: 9999)
+    .addPlugin(ChatTextPlugin())
+    .buildServer()
+
+Task {
+    for await event in server.events {
+        if let message = event.messageValue as? ChatTextMessage {
+            print("server received chat text: \(message.text)")
+        }
+
+        if let error = event.error {
+            print("server runtime error: \(error)")
+        }
+    }
+}
+
+try await server.start()
+```
+
+客户端：
+
+```swift
+import EasyNet
+
+let client = try EasyNetBuilder()
+    .useTCPClient(host: "127.0.0.1", port: 9999)
+    .addPlugin(ChatTextPlugin())
+    .buildClient()
+
+Task {
+    for await event in client.events {
+        if let message = event.messageValue as? ChatTextMessage {
+            print("client observed chat text: \(message.text)")
+        }
+
+        if let error = event.error {
+            print("client runtime error: \(error)")
+        }
+    }
+}
+
+client.start()
+```
+
+发送请求并获取 typed response：
+
+```swift
+let response = try await client.request(
+    message: ChatTextMessage(text: "hello business plugin"),
+    as: ChatTextMessage.self
+)
+
+print(response.text) // ack: hello business plugin
+```
+
+如果你不需要 typed response，也可以只发送消息，让业务侧统一从事件流中消费插件解码后的 `ChatTextMessage`：
+
+```swift
+try await client.send(
+    message: ChatTextMessage(text: "fire-and-forget")
+)
+```
+
 业务接入建议：
 
 - 为每类业务消息分配稳定的 `command`
@@ -731,6 +807,24 @@ swift run EasyNetTerminalClientDemo 127.0.0.1 9999 --messages 'hello|world|bye'
 ```bash
 swift run EasyNetTerminalClientDemo 127.0.0.1 9999 --message hello --timeout 5
 ```
+
+### 使用自定义消息插件发送业务消息
+
+```bash
+swift run EasyNetTerminalClientDemo 127.0.0.1 9999 --custom-message hello-business --custom-room ops
+```
+
+服务端仍然使用同一个 demo 入口：
+
+```bash
+swift run EasyNetTerminalServerDemo 9999
+```
+
+执行后可以看到：
+
+- client 通过 `DemoChatMessage` 发起业务请求
+- server 通过 `DemoChatPlugin` 解码并打印业务消息
+- client 通过 typed response 收到 `ack: ...` 响应
 
 ## 测试
 
