@@ -18,6 +18,33 @@
 
 - 暂未执行。
 
+## 0.1.0 - 2026-04-20
+
+### 新增
+
+- 新增分层的 transport、protocol core、plugin、runtime、facade 与内置插件模块，形成统一的 Swift Package 结构。
+- 新增 packet 级与 message 级 send/request API，支持自动分配请求 `session` 与类型化响应解码。
+- 新增请求策略配置能力，支持超时、重试次数、重试条件、退避与抖动。
+- 新增客户端可观测性能力，包括自动重连、主动心跳、流量监控，以及统一的 `configureObservability(...)` 配置入口。
+- 新增服务端流量监控与对应的服务端 `configureObservability(...)` 配置支持。
+- 新增 facade 层别名，如 `EasyNetRequestOptions`、`EasyNetClientObservabilityOptions` 与 `EasyNetServerObservabilityOptions`。
+- 新增 `RuntimeEvent` 常用访问器，便于提取事件公共负载。
+- 新增 builder 插件工厂支持，以及正式的业务消息与业务插件定义示例。
+- 新增终端 client/server demo，并加入基于 `DemoChatPlugin` 的自定义业务消息 demo。
+- 新增 GitHub Actions `swift test` CI，以及 README 顶部的版本、CI、协议、Swift 和平台徽章。
+
+### 变更
+
+- 将公开架构统一收敛到基于 `client.events` 与 `server.events` 的事件流模型。
+- 统一协议头语义，将 `kind` 调整为 `magic`。
+- 通过收口 runtime 构造入口与内部请求编排细节，缩小不必要的公共 API 暴露面。
+- 调整 README 指引，明确推荐 API 与兼容别名的边界，并区分系统插件与示例插件。
+- 将原本单体的核心测试拆分为多组聚焦职责的测试套件，并提取共享测试支撑。
+
+### 测试
+
+- 已完整执行 `swift test`：40 个测试全部通过，0 失败。
+
 ## 0.1.0-beta.2 - 2026-04-20
 
 ### 新增

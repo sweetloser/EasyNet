@@ -18,6 +18,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Not run yet.
 
+## 0.1.0 - 2026-04-20
+
+### Added
+
+- Added layered transport, protocol core, plugin, runtime, facade, and built-in plugin modules with a unified Swift Package layout.
+- Added packet-level and message-level send/request APIs with automatic request session allocation and typed response decoding.
+- Added request policy configuration for timeout, retry count, retry condition, retry backoff, and jitter.
+- Added client observability features including auto reconnect, active heartbeat, traffic monitoring, and a unified `configureObservability(...)` entry point.
+- Added server traffic monitoring and matching server-side `configureObservability(...)` support.
+- Added facade-facing aliases such as `EasyNetRequestOptions`, `EasyNetClientObservabilityOptions`, and `EasyNetServerObservabilityOptions`.
+- Added `RuntimeEvent` convenience accessors for common event payload extraction.
+- Added builder plugin factory support and formal examples for defining custom business messages and plugins.
+- Added terminal client/server demos plus a custom business-message demo powered by `DemoChatPlugin`.
+- Added GitHub Actions CI for `swift test` and README badges for release, CI, license, Swift, and supported platforms.
+
+### Changed
+
+- Standardized the public architecture around event streams via `client.events` and `server.events`.
+- Unified protocol header semantics from `kind` to `magic`.
+- Reduced public API surface by moving runtime construction and internal request orchestration details out of the intended public path.
+- Refined README guidance to distinguish recommended APIs from compatibility aliases and system plugins from demo plugins.
+- Split the previous monolithic core test file into focused suites with shared test support.
+
+### Tested
+
+- Verified with full `swift test` run: 40 tests passed, 0 failures.
+
 ## 0.1.0-beta.2 - 2026-04-20
 
 ### Added

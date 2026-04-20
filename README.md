@@ -43,7 +43,7 @@ EasyNet 是一个基于 SwiftNIO 的分层通信 SDK，提供了传输层、协�
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/sweetloser/EasyNet.git", exact: "0.1.0-beta.2")
+    .package(url: "https://github.com/sweetloser/EasyNet.git", exact: "0.1.0")
 ]
 ```
 
