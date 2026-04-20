@@ -90,7 +90,7 @@ public enum EasyNetBuilderError: Error, Equatable {
     case missingServerConfiguration
 }
 
-public final class EasyNetClient {
+public final class EasyNetClient: @unchecked Sendable {
     public let events: AsyncStream<RuntimeEvent>
 
     private let runtime: EasyNetRuntimeClient
@@ -116,6 +116,56 @@ public final class EasyNetClient {
         stop()
     }
 
+    public func enableAutoReconnect(_ options: RuntimeReconnectOptions) {
+        runtime.enableAutoReconnect(options)
+    }
+
+    public func disableAutoReconnect() {
+        runtime.disableAutoReconnect()
+    }
+
+    public func enableHeartbeat(_ options: RuntimeHeartbeatOptions) {
+        runtime.enableHeartbeat(options)
+    }
+
+    public func disableHeartbeat() {
+        runtime.disableHeartbeat()
+    }
+
+    public func enableTrafficMonitor(_ options: RuntimeTrafficMonitorOptions) {
+        runtime.enableTrafficMonitor(options)
+    }
+
+    public func disableTrafficMonitor() {
+        runtime.disableTrafficMonitor()
+    }
+
+    public func configureObservability(_ options: RuntimeClientObservabilityOptions) {
+        if let reconnect = options.reconnect {
+            enableAutoReconnect(reconnect)
+        } else {
+            disableAutoReconnect()
+        }
+
+        if let heartbeat = options.heartbeat {
+            enableHeartbeat(heartbeat)
+        } else {
+            disableHeartbeat()
+        }
+
+        if let trafficMonitor = options.trafficMonitor {
+            enableTrafficMonitor(trafficMonitor)
+        } else {
+            disableTrafficMonitor()
+        }
+    }
+
+    public func disableObservability() {
+        disableAutoReconnect()
+        disableHeartbeat()
+        disableTrafficMonitor()
+    }
+
     public func send(packet: ProtocolPacket) async throws {
         try await runtime.send(packet: packet)
     }
@@ -124,16 +174,28 @@ public final class EasyNetClient {
         try await runtime.send(message: message)
     }
 
-    public func request(_ packet: ProtocolPacket) async throws -> ProtocolPacket {
+    public func request(packet: ProtocolPacket) async throws -> ProtocolPacket {
         try await runtime.request(packet)
     }
 
-    public func request(_ packet: ProtocolPacket, timeout: TimeInterval?) async throws -> ProtocolPacket {
+    public func request(packet: ProtocolPacket, timeout: TimeInterval?) async throws -> ProtocolPacket {
         try await runtime.request(packet, timeout: timeout)
     }
 
-    public func request(_ packet: ProtocolPacket, options: RuntimeRequestOptions) async throws -> ProtocolPacket {
+    public func request(packet: ProtocolPacket, options: RuntimeRequestOptions) async throws -> ProtocolPacket {
         try await runtime.request(packet, options: options)
+    }
+
+    public func request(_ packet: ProtocolPacket) async throws -> ProtocolPacket {
+        try await request(packet: packet)
+    }
+
+    public func request(_ packet: ProtocolPacket, timeout: TimeInterval?) async throws -> ProtocolPacket {
+        try await request(packet: packet, timeout: timeout)
+    }
+
+    public func request(_ packet: ProtocolPacket, options: RuntimeRequestOptions) async throws -> ProtocolPacket {
+        try await request(packet: packet, options: options)
     }
 
     public func request(message: any DomainMessage) async throws -> ProtocolPacket {
@@ -165,7 +227,7 @@ public final class EasyNetClient {
     }
 }
 
-public final class EasyNetServer {
+public final class EasyNetServer: @unchecked Sendable {
     public let events: AsyncStream<RuntimeEvent>
 
     private let runtime: EasyNetRuntimeServer
@@ -181,6 +243,26 @@ public final class EasyNetServer {
 
     public func stop() {
         runtime.stop()
+    }
+
+    public func enableTrafficMonitor(_ options: RuntimeTrafficMonitorOptions) {
+        runtime.enableTrafficMonitor(options)
+    }
+
+    public func disableTrafficMonitor() {
+        runtime.disableTrafficMonitor()
+    }
+
+    public func configureObservability(_ options: RuntimeServerObservabilityOptions) {
+        if let trafficMonitor = options.trafficMonitor {
+            enableTrafficMonitor(trafficMonitor)
+        } else {
+            disableTrafficMonitor()
+        }
+    }
+
+    public func disableObservability() {
+        disableTrafficMonitor()
     }
 
     public func send(packet: ProtocolPacket, to connectionID: ConnectionID) async throws {

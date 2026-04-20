@@ -2,8 +2,8 @@ import Foundation
 import EasyNetProtocolCore
 import EasyNetProtocolPlugin
 
-public enum TerminalDemoCommand {
-    public static let textMessage: UInt16 = 0x1001
+package enum TerminalDemoCommand {
+    package static let textMessage: UInt16 = 0x1001
 }
 
 public struct TerminalTextMessage: DomainMessage {

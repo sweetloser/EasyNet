@@ -25,6 +25,10 @@ struct RuntimeEventEmitter {
         continuation.yield(.message(connectionContext, message))
     }
 
+    func traffic(_ stats: RuntimeTrafficStats, from connectionContext: ConnectionContext?) {
+        continuation.yield(.traffic(connectionContext, stats))
+    }
+
     func failure(_ error: Error) {
         continuation.yield(.failure(error))
     }

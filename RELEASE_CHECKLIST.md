@@ -10,12 +10,12 @@
   - `swift run EasyNetTerminalServerDemo 9999`
   - `swift run EasyNetTerminalClientDemo 127.0.0.1 9999 --message hello`
 
-## Suggested First Release
+## Suggested Current Release
 
-- Recommended version: `0.1.0-beta.1`
+- Recommended version: `0.1.0-beta.2`
 - Alternative stable-style version: `0.1.0`
-- Recommended first public tag choice: `0.1.0-beta.1`
-  - because the SDK is now usable and tested, but public API refinement is still likely in the next iterations
+- Recommended tag choice: `0.1.0-beta.2`
+  - because the SDK is now usable, documented, and API guidance has been tightened, but another round of real-world feedback is still valuable before a stable tag
 
 ## Release Notes Focus
 
@@ -27,7 +27,7 @@
 
 ## After Tagging
 
-- Publish GitHub release notes from `RELEASE_NOTES_0.1.0-beta.1.md`.
+- Publish GitHub release notes from `RELEASE_NOTES_0.1.0-beta.2.md`.
 - Keep `CHANGELOG.md` as the historical change log.
 - Attach short usage pointers:
   - package dependency snippet

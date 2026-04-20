@@ -3,6 +3,10 @@ import EasyNetProtocolCore
 import EasyNetProtocolPlugin
 import EasyNetTransport
 
+private enum RuntimeSystemCommand {
+    static let heartbeat: UInt16 = 0x0002
+}
+
 public final class EasyNetRuntimeClient: @unchecked Sendable {
     public let events: AsyncStream<RuntimeEvent>
 
@@ -11,17 +15,30 @@ public final class EasyNetRuntimeClient: @unchecked Sendable {
     private let outboundSender: RuntimeOutboundSender
     private let eventContinuation: AsyncStream<RuntimeEvent>.Continuation
     private let requestOrchestrator = RuntimeRequestOrchestrator()
+    private let trafficMonitor: RuntimeTrafficMonitor
     private var decoder: any PacketDecoder
     private var connectionContext: ConnectionContext?
     private var consumeTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    private var heartbeatOptions: RuntimeHeartbeatOptions?
+    private var reconnectOptions: RuntimeReconnectOptions?
+    private var reconnectAttempt = 0
 
-    public init(
+    package init(
         transport: any TransportClient,
         codec: any PacketCodec,
         registry: DefaultPluginRegistry
     ) {
         self.transport = transport
         self.registry = registry
+        let stream = AsyncStream<RuntimeEvent>.makeStream()
+        self.events = stream.stream
+        self.eventContinuation = stream.continuation
+        self.trafficMonitor = RuntimeTrafficMonitor(
+            emit: { [continuation = stream.continuation] connectionContext, stats in
+                continuation.yield(.traffic(connectionContext, stats))
+            }
+        )
         self.outboundSender = RuntimeOutboundSender(
             codec: codec,
             registry: registry,
@@ -33,10 +50,6 @@ public final class EasyNetRuntimeClient: @unchecked Sendable {
             }
         )
         self.decoder = codec.makeDecoder()
-
-        let stream = AsyncStream<RuntimeEvent>.makeStream()
-        self.events = stream.stream
-        self.eventContinuation = stream.continuation
     }
 
     deinit {
@@ -56,15 +69,58 @@ public final class EasyNetRuntimeClient: @unchecked Sendable {
     public func stop() {
         consumeTask?.cancel()
         consumeTask = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        heartbeatOptions = nil
+        reconnectOptions = nil
+        reconnectAttempt = 0
         transport.stop()
     }
 
+    public func enableAutoReconnect(_ options: RuntimeReconnectOptions) {
+        reconnectOptions = options
+        reconnectAttempt = 0
+    }
+
+    public func disableAutoReconnect() {
+        reconnectOptions = nil
+        reconnectAttempt = 0
+    }
+
+    public func enableHeartbeat(_ options: RuntimeHeartbeatOptions) {
+        heartbeatOptions = options
+        if connectionContext != nil {
+            startHeartbeatLoop()
+        }
+    }
+
+    public func disableHeartbeat() {
+        heartbeatOptions = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+    }
+
+    public func enableTrafficMonitor(_ options: RuntimeTrafficMonitorOptions) {
+        let connectionContext = self.connectionContext
+        Task {
+            await trafficMonitor.enable(options, connectionContext: connectionContext)
+        }
+    }
+
+    public func disableTrafficMonitor() {
+        Task {
+            await trafficMonitor.disable()
+        }
+    }
+
     public func send(packet: ProtocolPacket) async throws {
-        try await outboundSender.send(packet: packet)
+        let byteCount = try await outboundSender.send(packet: packet)
+        await trafficMonitor.recordWrite(byteCount)
     }
 
     public func send(message: any DomainMessage) async throws {
-        try await outboundSender.send(message: message)
+        let byteCount = try await outboundSender.send(message: message)
+        await trafficMonitor.recordWrite(byteCount)
     }
 
     public func request(_ packet: ProtocolPacket) async throws -> ProtocolPacket {
@@ -140,23 +196,44 @@ public final class EasyNetRuntimeClient: @unchecked Sendable {
                 emitter.stateChanged(.connecting)
             case .connected(let connectionContext):
                 self.connectionContext = connectionContext
+                reconnectAttempt = 0
+                Task {
+                    await trafficMonitor.connected(connectionContext)
+                }
+                startHeartbeatLoop()
                 emitter.stateChanged(.connected)
                 emitter.connected(connectionContext)
                 let context = makePluginContext(scopedConnection: connectionContext)
                 await registry.notifyConnected(context: context)
             case .disconnected(let connectionContext, let reason):
                 self.connectionContext = nil
+                heartbeatTask?.cancel()
+                heartbeatTask = nil
+                Task {
+                    await trafficMonitor.disconnected()
+                }
                 emitter.stateChanged(.disconnected)
                 emitter.disconnected(connectionContext, reason: reason)
                 await requestOrchestrator.failAll(reason)
                 let context = makePluginContext(scopedConnection: connectionContext)
                 await registry.notifyDisconnected(reason: reason, context: context)
+                guard case .localClosed = reason else {
+                    await scheduleReconnectIfNeeded()
+                    continue
+                }
             case .failed(let error):
+                heartbeatTask?.cancel()
+                heartbeatTask = nil
+                Task {
+                    await trafficMonitor.disconnected()
+                }
                 emitter.stateChanged(.failed)
                 emitter.failure(error)
                 await requestOrchestrator.failAll(error)
+                await scheduleReconnectIfNeeded()
             case .inboundBytes(let connectionContext, var buffer):
                 do {
+                    await trafficMonitor.recordRead(buffer.readableBytes)
                     let packets = try decoder.decode(&buffer)
                     let context = makePluginContext(scopedConnection: connectionContext)
                     try await dispatcher.dispatch(packets, from: connectionContext, context: context)
@@ -206,5 +283,81 @@ public final class EasyNetRuntimeClient: @unchecked Sendable {
 
     fileprivate func currentConnectionContext() -> ConnectionContext? {
         connectionContext
+    }
+
+    private func scheduleReconnectIfNeeded() async {
+        guard let reconnectOptions else {
+            return
+        }
+
+        let nextAttempt = reconnectAttempt + 1
+        if let maxAttempts = reconnectOptions.maxAttempts, nextAttempt > maxAttempts {
+            return
+        }
+
+        reconnectAttempt = nextAttempt
+        let delay = reconnectOptions.backoff.delay(
+            forRetryAttempt: nextAttempt,
+            jitter: reconnectOptions.jitter
+        )
+
+        if delay > 0 {
+            let nanoseconds = UInt64(delay * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+        }
+
+        guard self.reconnectOptions != nil else {
+            return
+        }
+
+        transport.start()
+    }
+
+    private func startHeartbeatLoop() {
+        heartbeatTask?.cancel()
+
+        guard let heartbeatOptions else {
+            heartbeatTask = nil
+            return
+        }
+
+        heartbeatTask = Task { [weak self] in
+            guard let self else { return }
+
+            var consecutiveFailures = 0
+            while !Task.isCancelled {
+                if heartbeatOptions.interval > 0 {
+                    let intervalNs = UInt64(heartbeatOptions.interval * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: intervalNs)
+                }
+
+                guard !Task.isCancelled, self.currentConnectionContext() != nil else {
+                    return
+                }
+
+                let packet = ProtocolPacket(
+                    header: ProtocolHeader(
+                        magic: .request,
+                        command: RuntimeSystemCommand.heartbeat
+                    )
+                )
+
+                do {
+                    _ = try await self.request(
+                        packet,
+                        options: RuntimeRequestOptions(timeout: heartbeatOptions.timeout)
+                    )
+                    consecutiveFailures = 0
+                } catch {
+                    consecutiveFailures += 1
+                    if consecutiveFailures >= heartbeatOptions.maxConsecutiveFailures {
+                        self.eventContinuation.yield(
+                            .failure(RuntimeHeartbeatError.lostResponses(count: consecutiveFailures))
+                        )
+                        return
+                    }
+                }
+            }
+        }
     }
 }

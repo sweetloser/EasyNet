@@ -1,0 +1,8 @@
+public typealias EasyNetRequestOptions = RuntimeRequestOptions
+public typealias EasyNetReconnectOptions = RuntimeReconnectOptions
+public typealias EasyNetHeartbeatOptions = RuntimeHeartbeatOptions
+public typealias EasyNetHeartbeatError = RuntimeHeartbeatError
+public typealias EasyNetTrafficMonitorOptions = RuntimeTrafficMonitorOptions
+public typealias EasyNetTrafficStats = RuntimeTrafficStats
+public typealias EasyNetClientObservabilityOptions = RuntimeClientObservabilityOptions
+public typealias EasyNetServerObservabilityOptions = RuntimeServerObservabilityOptions

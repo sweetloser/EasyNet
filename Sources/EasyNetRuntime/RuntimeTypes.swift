@@ -9,7 +9,80 @@ public enum RuntimeEvent {
     case disconnected(ConnectionContext?, ConnectionCloseReason)
     case packet(ConnectionContext?, ProtocolPacket)
     case message(ConnectionContext?, any DomainMessage)
+    case traffic(ConnectionContext?, RuntimeTrafficStats)
     case failure(Error)
+}
+
+public extension RuntimeEvent {
+    var connectionContext: ConnectionContext? {
+        switch self {
+        case .connected(let context):
+            return context
+        case .disconnected(let context, _):
+            return context
+        case .packet(let context, _):
+            return context
+        case .message(let context, _):
+            return context
+        case .traffic(let context, _):
+            return context
+        case .stateChanged, .failure:
+            return nil
+        }
+    }
+
+    var connectionState: ConnectionState? {
+        guard case .stateChanged(let state) = self else {
+            return nil
+        }
+        return state
+    }
+
+    var packetValue: ProtocolPacket? {
+        guard case .packet(_, let packet) = self else {
+            return nil
+        }
+        return packet
+    }
+
+    var messageValue: (any DomainMessage)? {
+        guard case .message(_, let message) = self else {
+            return nil
+        }
+        return message
+    }
+
+    var trafficStats: RuntimeTrafficStats? {
+        guard case .traffic(_, let stats) = self else {
+            return nil
+        }
+        return stats
+    }
+
+    var error: Error? {
+        switch self {
+        case .disconnected(_, let reason):
+            return reason
+        case .failure(let error):
+            return error
+        default:
+            return nil
+        }
+    }
+
+    var isObservabilityEvent: Bool {
+        switch self {
+        case .traffic, .failure:
+            return true
+        case .disconnected(_, let reason):
+            if case .localClosed = reason {
+                return false
+            }
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 public enum RuntimeRequestError: Error, Equatable {
@@ -60,7 +133,7 @@ public enum RuntimeRetryBackoff: Sendable, Equatable {
     case fixed(TimeInterval)
     case exponential(initialDelay: TimeInterval, multiplier: Double, maxDelay: TimeInterval?)
 
-    func delay(
+    public func delay(
         forRetryAttempt attempt: Int,
         jitter: RuntimeRetryJitter = .none,
         sample: Double = Double.random(in: 0...1)
@@ -118,12 +191,99 @@ public struct RuntimeRequestOptions: Sendable, Equatable {
     }
 }
 
-public actor RequestSessionAllocator {
+public struct RuntimeReconnectOptions: Sendable, Equatable {
+    public let maxAttempts: Int?
+    public let backoff: RuntimeRetryBackoff
+    public let jitter: RuntimeRetryJitter
+
+    public init(
+        maxAttempts: Int? = nil,
+        backoff: RuntimeRetryBackoff = .immediate,
+        jitter: RuntimeRetryJitter = .none
+    ) {
+        self.maxAttempts = maxAttempts.map { max(0, $0) }
+        self.backoff = backoff
+        self.jitter = jitter
+    }
+}
+
+public enum RuntimeHeartbeatError: Error, Equatable {
+    case lostResponses(count: Int)
+}
+
+public struct RuntimeHeartbeatOptions: Sendable, Equatable {
+    public let interval: TimeInterval
+    public let timeout: TimeInterval
+    public let maxConsecutiveFailures: Int
+
+    public init(
+        interval: TimeInterval = 30,
+        timeout: TimeInterval = 5,
+        maxConsecutiveFailures: Int = 5
+    ) {
+        self.interval = max(0, interval)
+        self.timeout = max(0, timeout)
+        self.maxConsecutiveFailures = max(1, maxConsecutiveFailures)
+    }
+}
+
+public struct RuntimeTrafficMonitorOptions: Sendable, Equatable {
+    public let interval: TimeInterval
+
+    public init(interval: TimeInterval = 1) {
+        self.interval = max(0, interval)
+    }
+}
+
+public struct RuntimeTrafficStats: Sendable, Equatable {
+    public let readKBps: Double
+    public let writeKBps: Double
+    public let totalReadKB: Double
+    public let totalWriteKB: Double
+
+    public init(
+        readKBps: Double,
+        writeKBps: Double,
+        totalReadKB: Double,
+        totalWriteKB: Double
+    ) {
+        self.readKBps = readKBps
+        self.writeKBps = writeKBps
+        self.totalReadKB = totalReadKB
+        self.totalWriteKB = totalWriteKB
+    }
+}
+
+public struct RuntimeClientObservabilityOptions: Sendable, Equatable {
+    public let reconnect: RuntimeReconnectOptions?
+    public let heartbeat: RuntimeHeartbeatOptions?
+    public let trafficMonitor: RuntimeTrafficMonitorOptions?
+
+    public init(
+        reconnect: RuntimeReconnectOptions? = nil,
+        heartbeat: RuntimeHeartbeatOptions? = nil,
+        trafficMonitor: RuntimeTrafficMonitorOptions? = nil
+    ) {
+        self.reconnect = reconnect
+        self.heartbeat = heartbeat
+        self.trafficMonitor = trafficMonitor
+    }
+}
+
+public struct RuntimeServerObservabilityOptions: Sendable, Equatable {
+    public let trafficMonitor: RuntimeTrafficMonitorOptions?
+
+    public init(
+        trafficMonitor: RuntimeTrafficMonitorOptions? = nil
+    ) {
+        self.trafficMonitor = trafficMonitor
+    }
+}
+
+actor RequestSessionAllocator {
     private var nextValue: UInt16 = 1
 
-    public init() {}
-
-    public func nextSession() -> UInt16 {
+    func nextSession() -> UInt16 {
         let session = nextValue
         nextValue &+= 1
         if nextValue == 0 {
@@ -133,35 +293,33 @@ public actor RequestSessionAllocator {
     }
 }
 
-public struct RequestKey: Hashable, Sendable {
-    public let session: UInt16
+struct RequestKey: Hashable, Sendable {
+    let session: UInt16
 
-    public init(session: UInt16) {
+    init(session: UInt16) {
         self.session = session
     }
 }
 
-public actor RequestCoordinator {
+actor RequestCoordinator {
     private var continuations: [RequestKey: CheckedContinuation<ProtocolPacket, Error>] = [:]
 
-    public init() {}
-
-    public func register(_ key: RequestKey, continuation: CheckedContinuation<ProtocolPacket, Error>) {
+    func register(_ key: RequestKey, continuation: CheckedContinuation<ProtocolPacket, Error>) {
         continuations[key] = continuation
     }
 
-    public func resolve(_ packet: ProtocolPacket) {
+    func resolve(_ packet: ProtocolPacket) {
         let key = RequestKey(session: packet.header.session)
         let continuation = continuations.removeValue(forKey: key)
         continuation?.resume(returning: packet)
     }
 
-    public func fail(_ key: RequestKey, error: Error) {
+    func fail(_ key: RequestKey, error: Error) {
         let continuation = continuations.removeValue(forKey: key)
         continuation?.resume(throwing: error)
     }
 
-    public func failAll(_ error: Error) {
+    func failAll(_ error: Error) {
         let values = continuations.values
         continuations.removeAll()
 

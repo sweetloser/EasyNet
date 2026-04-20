@@ -13,6 +13,8 @@ enum EasyNetTerminalServerDemoMain {
             .addPlugin(TerminalTextPlugin())
             .buildServer()
 
+        server.enableTrafficMonitor(RuntimeTrafficMonitorOptions(interval: 1))
+
         Task {
             for await event in server.events {
                 switch event {
@@ -32,6 +34,8 @@ enum EasyNetTerminalServerDemoMain {
                     if let text = message as? TerminalTextMessage {
                         print("[server] message from \(context?.remoteAddress ?? "unknown"): \(text.text)")
                     }
+                case .traffic(_, let stats):
+                    print("[server] traffic read=\(String(format: "%.2f", stats.readKBps))KB/s write=\(String(format: "%.2f", stats.writeKBps))KB/s")
                 case .failure(let error):
                     print("[server] error: \(error)")
                 }

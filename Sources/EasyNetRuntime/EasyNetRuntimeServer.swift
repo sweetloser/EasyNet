@@ -12,9 +12,10 @@ public final class EasyNetRuntimeServer: @unchecked Sendable {
     private let outboundSender: RuntimeOutboundSender
     private let decoderStore: RuntimeConnectionDecoderStore
     private let eventContinuation: AsyncStream<RuntimeEvent>.Continuation
+    private let trafficMonitor: RuntimeTrafficMonitor
     private var consumeTask: Task<Void, Never>?
 
-    public init(
+    package init(
         transport: any TransportServer,
         codec: any PacketCodec,
         registry: DefaultPluginRegistry
@@ -22,6 +23,14 @@ public final class EasyNetRuntimeServer: @unchecked Sendable {
         self.transport = transport
         self.codec = codec
         self.registry = registry
+        let stream = AsyncStream<RuntimeEvent>.makeStream()
+        self.events = stream.stream
+        self.eventContinuation = stream.continuation
+        self.trafficMonitor = RuntimeTrafficMonitor(
+            emit: { [continuation = stream.continuation] connectionContext, stats in
+                continuation.yield(.traffic(connectionContext, stats))
+            }
+        )
         self.outboundSender = RuntimeOutboundSender(
             codec: codec,
             registry: registry,
@@ -35,10 +44,6 @@ public final class EasyNetRuntimeServer: @unchecked Sendable {
         self.decoderStore = RuntimeConnectionDecoderStore(
             makeDecoder: { codec.makeDecoder() }
         )
-
-        let stream = AsyncStream<RuntimeEvent>.makeStream()
-        self.events = stream.stream
-        self.eventContinuation = stream.continuation
     }
 
     deinit {
@@ -58,15 +63,35 @@ public final class EasyNetRuntimeServer: @unchecked Sendable {
     public func stop() {
         consumeTask?.cancel()
         consumeTask = nil
+        let trafficMonitor = self.trafficMonitor
+        Task {
+            await trafficMonitor.disable()
+        }
         transport.stop()
     }
 
     public func send(packet: ProtocolPacket, to connectionID: ConnectionID) async throws {
-        try await outboundSender.send(packet: packet, to: connectionID)
+        let byteCount = try await outboundSender.send(packet: packet, to: connectionID)
+        await trafficMonitor.recordWrite(byteCount)
     }
 
     public func send(message: any DomainMessage, to connectionID: ConnectionID) async throws {
-        try await outboundSender.send(message: message, to: connectionID)
+        let byteCount = try await outboundSender.send(message: message, to: connectionID)
+        await trafficMonitor.recordWrite(byteCount)
+    }
+
+    public func enableTrafficMonitor(_ options: RuntimeTrafficMonitorOptions) {
+        let trafficMonitor = self.trafficMonitor
+        Task {
+            await trafficMonitor.enable(options, connectionContext: nil)
+        }
+    }
+
+    public func disableTrafficMonitor() {
+        let trafficMonitor = self.trafficMonitor
+        Task {
+            await trafficMonitor.disable()
+        }
     }
 
     private func consumeTransportEvents() async {
@@ -106,6 +131,7 @@ public final class EasyNetRuntimeServer: @unchecked Sendable {
                 emitter.failure(error)
             case .inboundBytes(let connectionContext, var buffer):
                 do {
+                    await trafficMonitor.recordRead(buffer.readableBytes)
                     try await inboundPipeline.process(&buffer, from: connectionContext)
                 } catch {
                     emitter.failure(error)

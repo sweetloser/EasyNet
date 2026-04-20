@@ -33,6 +33,8 @@ enum EasyNetTerminalClientDemoMain {
                         print("[client] received: \(text.text)")
                         await messageSignal.fire(text.text)
                     }
+                case .traffic(_, let stats):
+                    print("[client] traffic read=\(String(format: "%.2f", stats.readKBps))KB/s write=\(String(format: "%.2f", stats.writeKBps))KB/s")
                 case .failure(let error):
                     print("[client] error: \(error)")
                 }

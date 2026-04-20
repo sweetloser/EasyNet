@@ -3,9 +3,9 @@ import EasyNetProtocolCore
 import EasyNetProtocolPlugin
 import EasyNetTransport
 
-public enum SystemCommand {
-    public static let handshake: UInt16 = 0x0001
-    public static let heartbeat: UInt16 = 0x0002
+package enum SystemCommand {
+    package static let handshake: UInt16 = 0x0001
+    package static let heartbeat: UInt16 = 0x0002
 }
 
 public struct HandshakeMessage: DomainMessage {
